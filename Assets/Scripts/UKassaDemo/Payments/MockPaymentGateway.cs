@@ -16,26 +16,23 @@ namespace UKassaDemo.Payments
 
         public void CreatePayment(PaymentCreateRequest request, Action<PaymentCreateResponse> onSuccess, Action<string> onError)
         {
-            if (request == null || request.items == null || request.items.Count == 0 || request.totalRub <= 0)
+            if (request == null || request.Items == null || request.Items.Count == 0 || request.TotalRub <= 0)
             {
                 onError?.Invoke("Корзина пуста или сумма некорректна.");
                 return;
             }
 
-            var response = new PaymentCreateResponse
-            {
-                paymentId = $"test_{Guid.NewGuid():N}",
-                status = "pending",
-                confirmationUrl = "https://yoomoney.ru/"
-            };
+            var responseCreated = new PaymentCreateResponse(
+                paymentId: $"test_{Guid.NewGuid():N}",
+                confirmationUrl: "https://yoomoney.ru/",
+                status: "pending");
 
-            _payments[response.paymentId] = new MockPaymentState
+            _payments[responseCreated.PaymentId] = new MockPaymentState
             {
-                paymentId = response.paymentId,
+                paymentId = responseCreated.PaymentId,
                 createdAtUtc = DateTime.UtcNow
             };
-
-            onSuccess?.Invoke(response);
+            onSuccess?.Invoke(responseCreated);
         }
 
         public void GetPaymentStatus(string paymentId, Action<PaymentStatusResponse> onSuccess, Action<string> onError)
@@ -55,11 +52,7 @@ namespace UKassaDemo.Payments
             var elapsed = DateTime.UtcNow - state.createdAtUtc;
             var status = elapsed.TotalSeconds >= 3 ? "succeeded" : "pending";
 
-            onSuccess?.Invoke(new PaymentStatusResponse
-            {
-                paymentId = paymentId,
-                status = status
-            });
+            onSuccess?.Invoke(new PaymentStatusResponse(paymentId, status));
         }
     }
 }

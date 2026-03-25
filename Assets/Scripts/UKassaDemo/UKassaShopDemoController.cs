@@ -1,43 +1,46 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using UKassaDemo.Application;
+using UKassaDemo.Config;
+using UKassaDemo.Domain;
 using UKassaDemo.Payments;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
 namespace UKassaDemo
 {
-    public class UKassaShopDemoController : MonoBehaviour
+    /// <summary>
+    /// Thin Unity presenter for the demo shop: draws IMGUI windows and forwards UI actions to application layer.
+    /// </summary>
+    public sealed class UKassaShopDemoController : MonoBehaviour
     {
-        [Header("Debug")]
-        [SerializeField] private bool verboseLogs = true;
+        #pragma region Fields
+        [Header("Presenter UI")]
         [SerializeField, Range(0.55f, 1.15f)] private float uiScale = 0.9f;
 
-        [Header("Security/Backend")]
-        [SerializeField] private bool useBackendGateway = true;
-        [SerializeField] private string backendCreatePaymentEndpoint = "http://localhost:3000/api/payments/create";
-        [SerializeField] private string backendGetPaymentStatusEndpointTemplate = "http://localhost:3000/api/payments/status";
-        [SerializeField] private string backendClientKey = "";
-        [SerializeField] private string returnUrl = "http://localhost:3000/return";
+        [SerializeField] private bool verboseLogs = true;
 
-        [Header("Catalog")]
-        [SerializeField] private List<Product> products = new()
+        [Header("Config (Data-Driven)")]
+        [SerializeField] private ShopCatalogConfig catalogConfig;
+        [SerializeField] private UKassaDemoBackendConfig backendConfig;
+
+        [Header("Fallback Catalog (Demo)")]
+        [SerializeField] private List<CatalogProductData> fallbackCatalogProducts = new()
         {
-            new Product("rod_01", "Удочка спиннинг", 3200),
-            new Product("reel_01", "Катушка безынерц.", 2800),
-            new Product("line_01", "Леска 0.22", 450),
-            new Product("lure_01", "Воблер minnow", 780),
-            new Product("hooks_01", "Набор крючков", 390),
+            new CatalogProductData("item_01", "Товар 1", 1200),
+            new CatalogProductData("item_02", "Товар 2", 350),
+            new CatalogProductData("item_03", "Товар 3", 890),
         };
 
-        private readonly Dictionary<string, int> _quantities = new();
-        private IPaymentGateway _paymentGateway;
-        private string _statusTextValue = "Статус: готово";
-        private string _lastPaymentId;
-        private Rect _catalogWindowRect = new(40, 40, 760, 480);
-        private Rect _paymentWindowRect = new(830, 40, 420, 290);
+        private Rect _catalogWindowRect;
+        private Rect _paymentWindowRect;
         private Vector2 _catalogScroll;
+        private ShopDemoViewModel _viewModel;
+        private List<CatalogProduct> _catalog;
+        #pragma endregion
 
+        #pragma region Unity Lifecycle
         private void Awake()
         {
             Log($"Awake() scene={SceneManager.GetActiveScene().name}");
@@ -48,29 +51,19 @@ namespace UKassaDemo
                 return;
             }
 
-            SetupGateway();
-            foreach (var product in products)
-            {
-                if (!_quantities.ContainsKey(product.sku))
-                {
-                    _quantities[product.sku] = 0;
-                }
-            }
+            var screenW = Mathf.Max(640, Screen.width);
+            var screenH = Mathf.Max(360, Screen.height);
 
-            Log("IMGUI windows are active. Drag windows by title bars.");
-        }
+            _catalogWindowRect = new Rect(40f, 40f, screenW * 0.58f, screenH * 0.62f);
+            _paymentWindowRect = new Rect(screenW * 0.62f, 40f, screenW * 0.36f, screenH * 0.45f);
 
-        private void SetupGateway()
-        {
-            _paymentGateway = useBackendGateway
-                ? new BackendPaymentGateway(this, backendCreatePaymentEndpoint, backendGetPaymentStatusEndpointTemplate, backendClientKey)
-                : new MockPaymentGateway();
-            Log($"Gateway selected: {(useBackendGateway ? "BackendPaymentGateway" : "MockPaymentGateway")}");
+            BuildApplication();
+            Log("Presenter initialized.");
         }
 
         private void OnGUI()
         {
-            if (SceneManager.GetActiveScene().name != "UKassa")
+            if (_viewModel == null)
             {
                 return;
             }
@@ -78,192 +71,135 @@ namespace UKassaDemo
             var oldMatrix = GUI.matrix;
             GUI.matrix = Matrix4x4.Scale(new Vector3(uiScale, uiScale, 1f));
 
-            _catalogWindowRect = GUI.Window(5101, _catalogWindowRect, DrawCatalogWindow, "Товары");
-            _paymentWindowRect = GUI.Window(5102, _paymentWindowRect, DrawPaymentWindow, "Корзина и оплата");
+            _catalogWindowRect = GUI.Window(6101, _catalogWindowRect, DrawCatalogWindow, "Каталог товаров");
+            _paymentWindowRect = GUI.Window(6102, _paymentWindowRect, DrawPaymentWindow, "Корзина и оплата");
 
             GUI.matrix = oldMatrix;
         }
+        #pragma endregion
 
+        #pragma region Presenter Rendering
         private void DrawCatalogWindow(int windowId)
         {
             GUILayout.BeginVertical();
-            GUILayout.Label("Магазин рыболовных товаров");
+            GUILayout.Label("Выберите количество для каждого товара.");
             GUILayout.Space(6);
 
-            _catalogScroll = GUILayout.BeginScrollView(_catalogScroll, GUILayout.Height(370));
-            foreach (var product in products)
+            _catalogScroll = GUILayout.BeginScrollView(_catalogScroll, GUILayout.Height(_catalogWindowRect.height * 0.66f));
+
+            for (var i = 0; i < _catalog.Count; i++)
             {
-                _quantities.TryGetValue(product.sku, out var qty);
+                var p = _catalog[i];
+                _viewModel.Cart.QuantitiesBySku.TryGetValue(p.Sku, out var qty);
+
                 GUILayout.BeginHorizontal("box");
-                GUILayout.Label($"{product.title} ({product.priceRub} RUB)", GUILayout.Width(430));
+                GUILayout.Label(p.Title, GUILayout.Width(260));
+
                 if (GUILayout.Button("-", GUILayout.Width(42)))
                 {
-                    ChangeQty(product.sku, -1);
+                    _viewModel.ChangeQuantity(p.Sku, -1);
                 }
 
                 GUILayout.Label(qty.ToString(), GUILayout.Width(42));
+
                 if (GUILayout.Button("+", GUILayout.Width(42)))
                 {
-                    ChangeQty(product.sku, 1);
+                    _viewModel.ChangeQuantity(p.Sku, 1);
                 }
 
+                GUILayout.Label($"{p.UnitPriceRub} RUB", GUILayout.Width(120));
                 GUILayout.EndHorizontal();
             }
 
             GUILayout.EndScrollView();
+
+            GUILayout.Space(6);
             GUILayout.Label("Перетаскивай окно за заголовок.");
             GUILayout.EndVertical();
+
             GUI.DragWindow(new Rect(0, 0, 10000, 24));
         }
 
         private void DrawPaymentWindow(int windowId)
         {
             GUILayout.BeginVertical();
-            GUILayout.Label($"Итого: {CalcTotalRub()} RUB");
+            GUILayout.Label($"Итого: {_viewModel.TotalRub} RUB");
             GUILayout.Space(6);
-            GUILayout.Label(_statusTextValue, GUILayout.Height(52));
-            GUILayout.Space(8);
+            GUILayout.Label(_viewModel.StatusText, GUILayout.Height(52));
+            GUILayout.Space(10);
 
-            GUI.enabled = CalcTotalRub() > 0;
+            GUI.enabled = _viewModel.TotalRub > 0 && _viewModel.PaymentState != PaymentState.Creating;
             if (GUILayout.Button("Оплатить тестово через ЮKassa", GUILayout.Height(40)))
             {
-                HandlePayClicked();
+                _viewModel.CreatePayment();
             }
-
-            GUI.enabled = !string.IsNullOrWhiteSpace(_lastPaymentId);
-            if (GUILayout.Button("Проверить статус платежа", GUILayout.Height(34)))
-            {
-                HandleCheckStatusClicked();
-            }
-
             GUI.enabled = true;
+
+            GUI.enabled = !string.IsNullOrWhiteSpace(_viewModel.LastPaymentId) && _viewModel.PaymentState != PaymentState.Creating;
+            if (GUILayout.Button("Проверить статус последнего платежа", GUILayout.Height(34)))
+            {
+                _viewModel.CheckPaymentStatus();
+            }
+            GUI.enabled = true;
+
             GUILayout.Space(6);
             GUILayout.Label("Перетаскивай окно за заголовок.");
             GUILayout.EndVertical();
+
             GUI.DragWindow(new Rect(0, 0, 10000, 24));
         }
+        #pragma endregion
 
-        private void ChangeQty(string sku, int delta)
+        #pragma region Application Wiring
+        private void BuildApplication()
         {
-            _quantities.TryGetValue(sku, out var current);
-            _quantities[sku] = Mathf.Max(0, current + delta);
-        }
+            var entries = catalogConfig != null
+                ? catalogConfig.Products
+                : fallbackCatalogProducts;
 
-        private int CalcTotalRub()
-        {
-            var total = 0;
-            foreach (var p in products)
-            {
-                _quantities.TryGetValue(p.sku, out var q);
-                total += q * p.priceRub;
-            }
-
-            return total;
-        }
-
-        private void HandlePayClicked()
-        {
-            var request = BuildPaymentRequest();
-            if (request.items.Count == 0)
-            {
-                _statusTextValue = "Статус: корзина пуста";
-                return;
-            }
-
-            _statusTextValue = "Статус: создаем платеж...";
-            Log($"CreatePayment started. items={request.items.Count}, totalRub={request.totalRub}");
-
-            _paymentGateway.CreatePayment(
-                request,
-                onSuccess: response =>
-                {
-                    _statusTextValue = $"Статус: paymentId={response.paymentId}, открываем оплату";
-                    _lastPaymentId = response.paymentId;
-                    Log($"CreatePayment success. paymentId={response.paymentId}, status={response.status}");
-                    Application.OpenURL(response.confirmationUrl);
-                },
-                onError: error =>
-                {
-                    _statusTextValue = $"Статус: ошибка - {error}";
-                    Log($"CreatePayment error: {error}");
-                });
-        }
-
-        private PaymentCreateRequest BuildPaymentRequest()
-        {
-            var items = products
-                .Select(p =>
-                {
-                    _quantities.TryGetValue(p.sku, out var q);
-                    return new { Product = p, Quantity = q };
-                })
-                .Where(x => x.Quantity > 0)
-                .Select(x => new PaymentItemRequest
-                {
-                    sku = x.Product.sku,
-                    title = x.Product.title,
-                    quantity = x.Quantity,
-                    unitPriceRub = x.Product.priceRub
-                })
+            _catalog = entries
+                .Select(e => e.ToDomainProduct())
                 .ToList();
 
-            return new PaymentCreateRequest
-            {
-                orderId = $"order_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}",
-                returnUrl = returnUrl,
-                items = items,
-                totalRub = items.Sum(i => i.quantity * i.unitPriceRub)
-            };
+            var cart = new Cart(_catalog);
+
+            var useBackend = backendConfig != null ? backendConfig.UseBackendGateway : true;
+            var createEndpoint = backendConfig != null ? backendConfig.BackendCreatePaymentEndpoint : "http://localhost:3000/api/payments/create";
+            var statusEndpointTemplate = backendConfig != null ? backendConfig.BackendGetPaymentStatusEndpointTemplate : "http://localhost:3000/api/payments/status";
+            var clientKey = backendConfig != null ? backendConfig.BackendClientKey : "";
+            var configuredReturnUrl = backendConfig != null ? backendConfig.ReturnUrl : "http://localhost:3000/return";
+
+            IPaymentGateway gateway = useBackend
+                ? (IPaymentGateway)new BackendPaymentGateway(this, createEndpoint, statusEndpointTemplate, clientKey)
+                : new MockPaymentGateway();
+
+            var mapper = new PaymentRequestMapper();
+            _viewModel = new ShopDemoViewModel(cart, gateway, mapper, configuredReturnUrl);
+
+            _viewModel.OnPaymentCreated += OnPaymentCreated;
         }
 
-        private void HandleCheckStatusClicked()
+        private void OnPaymentCreated(PaymentCreateResponse response)
         {
-            if (string.IsNullOrWhiteSpace(_lastPaymentId))
+            if (response == null || string.IsNullOrWhiteSpace(response.ConfirmationUrl))
             {
-                _statusTextValue = "Статус: paymentId еще не создан";
+                Log("PaymentCreated: confirmationUrl is empty.");
                 return;
             }
 
-            _statusTextValue = "Статус: получаем платеж...";
-            Log($"GetPaymentStatus started. paymentId={_lastPaymentId}");
-
-            _paymentGateway.GetPaymentStatus(
-                _lastPaymentId,
-                onSuccess: r =>
-                {
-                    _statusTextValue = $"Статус: paymentId={r.paymentId}, status={r.status}";
-                    Log($"GetPaymentStatus success. paymentId={r.paymentId}, status={r.status}");
-                },
-                onError: error =>
-                {
-                    _statusTextValue = $"Статус: ошибка статуса - {error}";
-                    Log($"GetPaymentStatus error: {error}");
-                });
+            Log($"Opening YooKassa payment confirmation: paymentId={response.PaymentId}");
+            UnityEngine.Application.OpenURL(response.ConfirmationUrl);
         }
+        #pragma endregion
 
+        #pragma region Helpers
         private void Log(string message)
         {
-            if (!verboseLogs)
-            {
-                return;
-            }
-
+            if (!verboseLogs) return;
             Debug.Log($"[UKassaShopDemoController] {message}");
         }
+        #pragma endregion
 
-        [Serializable]
-        public class Product
-        {
-            public string sku;
-            public string title;
-            public int priceRub;
-
-            public Product(string sku, string title, int priceRub)
-            {
-                this.sku = sku;
-                this.title = title;
-                this.priceRub = priceRub;
-            }
-        }
     }
 }
+

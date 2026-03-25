@@ -76,7 +76,7 @@ namespace UKassaDemo.Payments
                 yield break;
             }
 
-            if (response == null || string.IsNullOrWhiteSpace(response.confirmationUrl))
+            if (response == null || string.IsNullOrWhiteSpace(response.ConfirmationUrl))
             {
                 onError?.Invoke("В ответе нет confirmationUrl.");
                 yield break;
@@ -125,7 +125,7 @@ namespace UKassaDemo.Payments
                 yield break;
             }
 
-            if (response == null || string.IsNullOrWhiteSpace(response.status))
+            if (response == null || string.IsNullOrWhiteSpace(response.Status))
             {
                 onError?.Invoke("Backend(status): не удалось распарсить status.");
                 yield break;

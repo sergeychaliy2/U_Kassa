@@ -1,0 +1,19 @@
+{
+    "name": "UKassaDemo.Presentation",
+    "rootNamespace": "UKassaDemo",
+    "references": [
+        "UKassaDemo.Domain",
+        "UKassaDemo.Payments",
+        "UKassaDemo.Config",
+        "UKassaDemo.Application"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

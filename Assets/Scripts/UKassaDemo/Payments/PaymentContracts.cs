@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using UnityEngine;
 
 namespace UKassaDemo.Payments
@@ -95,9 +96,31 @@ namespace UKassaDemo.Payments
         public PaymentStatusResponse() { }
     }
 
+    /// <summary>
+    /// Port for payment transport. Domain/Application never depend on a concrete
+    /// implementation — this allows swapping Mock ↔ Backend without touching callers.
+    /// </summary>
     public interface IPaymentGateway
     {
-        void CreatePayment(PaymentCreateRequest request, Action<PaymentCreateResponse> onSuccess, Action<string> onError);
-        void GetPaymentStatus(string paymentId, Action<PaymentStatusResponse> onSuccess, Action<string> onError);
+        /// <summary>
+        /// Creates a payment. Exactly one of <paramref name="onSuccess"/> / <paramref name="onError"/>
+        /// will be invoked. If <paramref name="cancellationToken"/> is cancelled before completion,
+        /// <paramref name="onError"/> is called with <see cref="PaymentErrorKind.Cancelled"/>.
+        /// </summary>
+        void CreatePayment(
+            PaymentCreateRequest request,
+            Action<PaymentCreateResponse> onSuccess,
+            Action<PaymentError> onError,
+            CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Retrieves current status for a previously created payment.
+        /// Contract for cancellation and callbacks is identical to <see cref="CreatePayment"/>.
+        /// </summary>
+        void GetPaymentStatus(
+            string paymentId,
+            Action<PaymentStatusResponse> onSuccess,
+            Action<PaymentError> onError,
+            CancellationToken cancellationToken = default);
     }
 }

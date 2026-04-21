@@ -9,13 +9,13 @@ namespace UKassaDemo.Domain
     /// </summary>
     public sealed class Cart
     {
-        #pragma region Fields
+        #region Fields
         private readonly IReadOnlyDictionary<string, CatalogProduct> _catalogBySku;
         private readonly Dictionary<string, int> _quantitiesBySku = new();
         private int _totalRub;
-        #pragma endregion
+        #endregion
 
-        #pragma region Constructor
+        #region Constructor
         public Cart(IReadOnlyCollection<CatalogProduct> products)
         {
             if (products == null) throw new ArgumentNullException(nameof(products));
@@ -26,9 +26,9 @@ namespace UKassaDemo.Domain
                 _quantitiesBySku[sku] = 0;
             }
         }
-        #pragma endregion
+        #endregion
 
-        #pragma region Public API
+        #region Public API
         public IReadOnlyDictionary<string, int> QuantitiesBySku => _quantitiesBySku;
         public int TotalRub => _totalRub;
 
@@ -66,8 +66,8 @@ namespace UKassaDemo.Domain
 
             return lines;
         }
-        #pragma endregion
-        #pragma region Private Helpers
+        #endregion
+        #region Private Helpers
         private void RecalculateTotal()
         {
             var total = 0;
@@ -82,7 +82,7 @@ namespace UKassaDemo.Domain
 
             _totalRub = total;
         }
-        #pragma endregion
+        #endregion
     }
 
     /// <summary>

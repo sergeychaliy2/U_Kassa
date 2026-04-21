@@ -1,0 +1,16 @@
+{
+    "name": "UKassaDemo.Config",
+    "rootNamespace": "UKassaDemo.Config",
+    "references": [
+        "UKassaDemo.Domain"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

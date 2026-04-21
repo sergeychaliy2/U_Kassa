@@ -29,21 +29,28 @@ https://github.com/user-attachments/assets/78e0c7a4-4e7b-4e0e-9ddd-f2e5470472b3
 | Контракты | DTO на Unity-стороне + идентичный JSON на сервере |
 | Конфигурация | `ScriptableObject` (каталог + эндпоинты) |
 
-Структура репозитория:
+Структура репозитория (границы слоёв прошиты **Assembly Definitions** — нарушение направления зависимостей ловится компилятором, а не ревью):
 
 ```
 UKassa/
 ├── Assets/
-│   ├── Scenes/UKassa.unity            — целевая сцена
+│   ├── Scenes/UKassa.unity                    — целевая сцена
 │   └── Scripts/UKassaDemo/
-│       ├── Domain/                    — ядро, без Unity-зависимостей
-│       ├── Application/               — use-cases / ViewModel / mapper
-│       ├── Payments/                  — порт IPaymentGateway + 2 адаптера
-│       ├── Config/                    — ScriptableObject-конфиги
-│       ├── UKassaShopDemoController.cs — MonoBehaviour-презентер (IMGUI)
-│       └── UKassaDemoBootstrap.cs     — точка входа / composition root
-└── backend/yookassa-demo-backend/     — Node.js сервер c YooKassa SDK
+│       ├── UKassaDemo.Presentation.asmdef     — корневая сборка презентации
+│       ├── Domain/                            — ядро, noEngineReferences: true
+│       │   └── UKassaDemo.Domain.asmdef
+│       ├── Application/                       — ViewModel, mapper, installer
+│       │   └── UKassaDemo.Application.asmdef  (ref: Domain, Payments, Config)
+│       ├── Payments/                          — IPaymentGateway + 2 адаптера + PaymentError
+│       │   └── UKassaDemo.Payments.asmdef     (ref: Domain)
+│       ├── Config/                            — ScriptableObject-конфиги
+│       │   └── UKassaDemo.Config.asmdef       (ref: Domain)
+│       ├── UKassaShopDemoController.cs        — тонкий MonoBehaviour-презентер (IMGUI)
+│       └── UKassaDemoBootstrap.cs             — RuntimeInitializeOnLoad-хук
+└── backend/yookassa-demo-backend/             — Node.js сервер c YooKassa SDK
 ```
+
+> `UKassaDemo.Domain.asmdef` помечен `"noEngineReferences": true` — Domain физически не может использовать `UnityEngine`. Это превращает правило «ядро без Unity» из документации в инвариант компиляции.
 
 ---
 
@@ -112,15 +119,17 @@ UKassa/
 
 ### Application — [Assets/Scripts/UKassaDemo/Application/](Assets/Scripts/UKassaDemo/Application/)
 
-- **[ShopDemoViewModel.cs](Assets/Scripts/UKassaDemo/Application/ShopDemoViewModel.cs)** — **MVVM ViewModel**, он же use-case handler: `ChangeQuantity`, `CreatePayment`, `CheckPaymentStatus`. Внутри — мини-стейт-машина (`SetState`/`SetError`) и события `OnPaymentStateChanged`, `OnPaymentCreated`. Все зависимости инжектятся через конструктор + null-guards.
+- **[ShopDemoViewModel.cs](Assets/Scripts/UKassaDemo/Application/ShopDemoViewModel.cs)** — **MVVM ViewModel**, он же use-case handler: `ChangeQuantity`, `CreatePayment`, `CheckPaymentStatus`. Внутри — мини-стейт-машина (`SetState`/`SetError`) и события `OnPaymentStateChanged`, `OnPaymentCreated`. Все зависимости инжектятся через конструктор + null-guards. Реализует **`IDisposable`**: владеет `CancellationTokenSource`, который отменяет все in-flight запросы при уничтожении презентера.
+- **[ShopDemoInstaller.cs](Assets/Scripts/UKassaDemo/Application/ShopDemoInstaller.cs)** — **composition root**: статическая фабрика, собирающая объектный граф (catalog → Cart → IPaymentGateway → Mapper → ViewModel) из конфига. Вынесена из презентера — контроллер больше не «знает» про конкретные реализации.
 - **[PaymentRequestMapper.cs](Assets/Scripts/UKassaDemo/Application/PaymentRequestMapper.cs)** — mapper `Cart → PaymentCreateRequest`. Изолирует трансформацию, не даёт ViewModel «знать» про форму DTO.
 - **[PaymentStateChanged.cs](Assets/Scripts/UKassaDemo/Application/PaymentStateChanged.cs)** — event payload (`readonly struct`, без аллокаций).
 
 ### Payments (порт + адаптеры) — [Assets/Scripts/UKassaDemo/Payments/](Assets/Scripts/UKassaDemo/Payments/)
 
-- **[PaymentContracts.cs](Assets/Scripts/UKassaDemo/Payments/PaymentContracts.cs)** — DTO (`PaymentCreateRequest/Response`, `PaymentStatusResponse`, `PaymentItemRequest`) и сам порт **`IPaymentGateway`**. DTO — `[Serializable]` с private-полями + read-only геттерами (чтобы `JsonUtility` умел их сериализовать).
-- **[BackendPaymentGateway.cs](Assets/Scripts/UKassaDemo/Payments/BackendPaymentGateway.cs)** — production-адаптер: `UnityWebRequest` + корутины, поддержка `X-Client-Key`, полноценная обработка пустых/битых JSON-ответов.
-- **[MockPaymentGateway.cs](Assets/Scripts/UKassaDemo/Payments/MockPaymentGateway.cs)** — in-memory stub: хранит платежи в Dictionary, через 3 секунды статус становится `succeeded`. Позволяет полностью прогнать сценарий без backend’a.
+- **[PaymentContracts.cs](Assets/Scripts/UKassaDemo/Payments/PaymentContracts.cs)** — DTO (`PaymentCreateRequest/Response`, `PaymentStatusResponse`, `PaymentItemRequest`) и сам порт **`IPaymentGateway`**. DTO — `[Serializable]` с private-полями + read-only геттерами (чтобы `JsonUtility` умел их сериализовать). Интерфейс принимает `CancellationToken` — отмена времени жизни презентера пробрасывается в сетевой слой.
+- **[PaymentError.cs](Assets/Scripts/UKassaDemo/Payments/PaymentError.cs)** — **типизированный Result для ошибок** (`PaymentErrorKind` + `Message` + опциональный `RawPayload`). Заменяет лоссовый `Action<string> onError`: вызывающий код может отличить Network от Validation, Cancelled от NotFound без парсинга строк.
+- **[BackendPaymentGateway.cs](Assets/Scripts/UKassaDemo/Payments/BackendPaymentGateway.cs)** — production-адаптер: `UnityWebRequest` + корутины, timeout (20с по умолчанию), cancellation через `req.Abort()`, поддержка `X-Client-Key`, унифицированная обработка транспорт-ошибок и битых JSON-ответов. `sealed`.
+- **[MockPaymentGateway.cs](Assets/Scripts/UKassaDemo/Payments/MockPaymentGateway.cs)** — in-memory stub: хранит платежи в Dictionary, через 3 секунды статус становится `succeeded`. Позволяет полностью прогнать сценарий без backend’a. `sealed`, не тянет `UnityEngine`.
 
 ### Config — [Assets/Scripts/UKassaDemo/Config/](Assets/Scripts/UKassaDemo/Config/)
 
@@ -130,7 +139,7 @@ UKassa/
 
 ### Presentation — [UKassaShopDemoController.cs](Assets/Scripts/UKassaDemo/UKassaShopDemoController.cs)
 
-Тонкий `MonoBehaviour`-презентер. Рисует IMGUI, форвардит действия в `ShopDemoViewModel`, слушает `OnPaymentCreated` и открывает `confirmationUrl`. В `BuildApplication()` — **composition root**: собирает зависимости и принимает решение Mock vs Backend по флагу из конфига.
+Тонкий `MonoBehaviour`-презентер. Рисует IMGUI, форвардит действия в `ShopDemoViewModel`, подписан на **оба** события ViewModel (`OnPaymentCreated` → открывает `confirmationUrl`, `OnPaymentStateChanged` → пишет в лог). `BuildApplication()` теперь делегирует сборку в `ShopDemoInstaller.Install(...)`, поэтому контроллер не знает про конкретные реализации `IPaymentGateway`. В `OnDestroy` — аккуратная уборка: отписка от событий + `_viewModel.Dispose()` (он отменит in-flight HTTP-запросы через `CancellationToken`).
 
 ### Bootstrap — [UKassaDemoBootstrap.cs](Assets/Scripts/UKassaDemo/UKassaDemoBootstrap.cs)
 
@@ -158,6 +167,9 @@ Express-приложение: два endpoint’а, sanitize входных да
 | **Null Object / Test Double** | `MockPaymentGateway` | Полная прогон сценария без внешних систем |
 | **Configuration via Asset** | `ScriptableObject`-конфиги | Данные отделены от кода, правятся в Editor |
 | **Idempotency Key** | `OrderId` → `createPayment(_, orderId)` на сервере | Защита от двойного клика / ретраев |
+| **Result / Typed Error** | `PaymentError` + `PaymentErrorKind` | Вместо `Action<string>` — классификация ошибок enum-ом |
+| **Cancellation Token Pattern** | `CancellationToken` через `IPaymentGateway` | Отмена in-flight запросов по `OnDestroy` |
+| **Disposable Lifetime** | `ShopDemoViewModel : IDisposable` + `CancellationTokenSource` | Единая точка закрытия ресурсов |
 
 ---
 
@@ -224,32 +236,30 @@ npm start              # http://localhost:3000
 
 ---
 
-## Честная критика и TODO
+## Что уже сделано и что ещё остаётся
 
-То, что в реальном проекте я бы доработал (senior-честность):
+### ✅ Исправлено в этом проекте
 
-### Архитектура
-- [ ] Ввести **Assembly Definitions** (`.asmdef`) по слоям. Сейчас границы слоёв держатся на дисциплине, компилятор их не стережёт. Asmdef превратят `Domain → UnityEngine` в ошибку сборки.
-- [ ] Вынести **composition root** из `UKassaShopDemoController` в отдельный `Installer` (Zenject/VContainer или ручной). Сейчас презентер знает про все конкретные классы.
-- [ ] Перейти с **callback-API** (`Action<T> onSuccess, Action<string> onError`) на **async/UniTask** — проще писать, проще отменять, структурированные ошибки вместо `string`.
-- [ ] Ввести `CancellationToken` в `IPaymentGateway` и связать с жизненным циклом сцены/ViewModel — сейчас при уничтожении контроллера мид-флайтовый callback выстрелит в «мёртвый» ViewModel.
-- [ ] Заменить `string` в `onError` на **типизированный Result/Error** (например, `OneOf<PaymentCreateResponse, PaymentError>`).
+- **Assembly Definitions по слоям** — 5 `.asmdef` прошивают направление зависимостей. `UKassaDemo.Domain` имеет `"noEngineReferences": true` — `using UnityEngine` в Domain теперь ошибка компиляции.
+- **Composition Root вынесен** в [ShopDemoInstaller](Assets/Scripts/UKassaDemo/Application/ShopDemoInstaller.cs). Презентер больше не знает про `MockPaymentGateway` / `BackendPaymentGateway`.
+- **Типизированные ошибки** — `Action<string> onError` → `Action<PaymentError> onError` с enum `PaymentErrorKind` (Network / InvalidResponse / Validation / Cancelled / EmptyCart / NotFound / Timeout / Unknown).
+- **`CancellationToken` в `IPaymentGateway`**, привязан к lifetime ViewModel через `IDisposable`. На `OnDestroy` вызывается `Dispose`, CTS отменяется, корутина внутри `BackendPaymentGateway` зовёт `UnityWebRequest.Abort()` — ни один callback не стреляет в «мёртвый» VM.
+- **Timeout на `UnityWebRequest`** — 20 секунд по умолчанию, параметром в конструкторе.
+- **Отписка от событий** в `OnDestroy` (`OnPaymentCreated`, `OnPaymentStateChanged`).
+- **Презентер подписан на `OnPaymentStateChanged`** — событийная модель, а не только pull.
+- **`#pragma region` → `#region`** во всех файлах. `#pragma region` — C/C++-директива, в C# компилятор её игнорирует (и в Rider/VS она не сворачивает блоки).
+- **Адаптеры помечены `sealed`** (`MockPaymentGateway`, `BackendPaymentGateway`) — явная закрытость расширения через наследование, только через реализацию `IPaymentGateway`.
+- **`MockPaymentGateway` больше не импортирует `UnityEngine`** — чистый C#, работает и в unit-тестах без Unity Play Mode.
 
-### Код
-- [ ] В [UKassaShopDemoController.cs](Assets/Scripts/UKassaDemo/UKassaShopDemoController.cs) используется `#pragma region` — это **синтаксис C/C++**, корректная форма в C# — `#region` / `#endregion`. Компилятор C# не создаёт из `#pragma region` визуальных регионов, директива игнорируется.
-- [ ] `_viewModel.OnPaymentCreated += OnPaymentCreated;` в `BuildApplication` никогда не **отписывается** в `OnDestroy` — потенциальная утечка при пересоздании контроллера.
-- [ ] Деньги хранятся как `int` (рубли, без копеек). Для реальной интеграции — `decimal` или `long` в минимальных единицах (копейках), а форматирование — только на границе JSON.
-- [ ] У `UnityWebRequest` не задан `timeout` — «повисший» бэкенд зависнет UI.
-- [ ] Нет ретраев / backoff у `GetPaymentStatus` и нет автополлинга — пользователь должен руками нажимать кнопку.
-- [ ] `BackendClientKey` лежит в билде клиента — это **обфускация**, а не безопасность. В проде — либо удалить, либо выдавать короткоживущий токен после аутентификации пользователя.
+### ⏳ Осталось для продакшена
 
-### Backend
-- [ ] Нет **webhook** для `payment.succeeded` от ЮKassa — в проде клиентский polling недопустим как единственный канал правды.
-- [ ] Нет персистентности заказов — перезапуск сервера теряет контекст. Нужна БД (хотя бы SQLite для демо).
-- [ ] Нет **rate-limiting** и **структурированных логов**.
-
-### UI
-- [ ] IMGUI — это на один раз показать. Прод-UI — UI Toolkit / uGUI с data-binding на событиях `OnPaymentStateChanged` (сейчас событие есть, но презентер его не подписывает и читает ViewModel пуллингом каждый кадр в `OnGUI`).
+- [ ] Перейти с callback-API на **async/UniTask** — короче код и структурированные исключения. Сейчас callback-API, но с типизированной ошибкой и `CancellationToken` — что закрывает 80% боли.
+- [ ] Деньги как `int` рублей. В проде — `long` в копейках (или `decimal`), форматирование только на границе JSON.
+- [ ] Автополлинг статуса платежа с backoff вместо ручного нажатия кнопки.
+- [ ] `BackendClientKey` в клиентском билде — это **обфускация**, а не безопасность. В проде — короткоживущий токен после аутентификации пользователя.
+- [ ] **Webhook** от ЮKassa на backend (`payment.succeeded`) + персистентность заказов (SQLite/Postgres). Polling недопустим как единственный источник правды.
+- [ ] **Rate-limiting** и структурированные логи на backend.
+- [ ] Переписать IMGUI на **UI Toolkit / uGUI** с reactive data-binding на `OnPaymentStateChanged`. Сейчас событие есть и презентер подписан (логирует), но рендер всё ещё pull в `OnGUI` — это естественно для immediate-mode IMGUI, но не для прод-UI.
 
 ---
 

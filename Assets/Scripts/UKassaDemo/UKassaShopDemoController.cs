@@ -1,6 +1,4 @@
-using System;
 using System.Collections.Generic;
-using System.Linq;
 using UKassaDemo.Application;
 using UKassaDemo.Config;
 using UKassaDemo.Domain;
@@ -11,11 +9,14 @@ using UnityEngine.SceneManagement;
 namespace UKassaDemo
 {
     /// <summary>
-    /// Thin Unity presenter for the demo shop: draws IMGUI windows and forwards UI actions to application layer.
+    /// Thin Unity presenter for the demo shop: draws IMGUI windows
+    /// and forwards UI actions to the application layer.
+    /// The presenter itself does not construct the object graph — that is
+    /// delegated to <see cref="ShopDemoInstaller"/>.
     /// </summary>
     public sealed class UKassaShopDemoController : MonoBehaviour
     {
-        #pragma region Fields
+        #region Fields
         [Header("Presenter UI")]
         [SerializeField, Range(0.55f, 1.15f)] private float uiScale = 0.9f;
 
@@ -37,10 +38,10 @@ namespace UKassaDemo
         private Rect _paymentWindowRect;
         private Vector2 _catalogScroll;
         private ShopDemoViewModel _viewModel;
-        private List<CatalogProduct> _catalog;
-        #pragma endregion
+        private IReadOnlyList<CatalogProduct> _catalog;
+        #endregion
 
-        #pragma region Unity Lifecycle
+        #region Unity Lifecycle
         private void Awake()
         {
             Log($"Awake() scene={SceneManager.GetActiveScene().name}");
@@ -61,6 +62,18 @@ namespace UKassaDemo
             Log("Presenter initialized.");
         }
 
+        private void OnDestroy()
+        {
+            if (_viewModel != null)
+            {
+                _viewModel.OnPaymentCreated -= OnPaymentCreated;
+                _viewModel.OnPaymentStateChanged -= OnPaymentStateChangedLog;
+                _viewModel.Dispose();
+                _viewModel = null;
+            }
+            Log("Presenter destroyed.");
+        }
+
         private void OnGUI()
         {
             if (_viewModel == null)
@@ -76,9 +89,9 @@ namespace UKassaDemo
 
             GUI.matrix = oldMatrix;
         }
-        #pragma endregion
+        #endregion
 
-        #pragma region Presenter Rendering
+        #region Presenter Rendering
         private void DrawCatalogWindow(int windowId)
         {
             GUILayout.BeginVertical();
@@ -148,35 +161,17 @@ namespace UKassaDemo
 
             GUI.DragWindow(new Rect(0, 0, 10000, 24));
         }
-        #pragma endregion
+        #endregion
 
-        #pragma region Application Wiring
+        #region Application Wiring
         private void BuildApplication()
         {
-            var entries = catalogConfig != null
-                ? catalogConfig.Products
-                : fallbackCatalogProducts;
-
-            _catalog = entries
-                .Select(e => e.ToDomainProduct())
-                .ToList();
-
-            var cart = new Cart(_catalog);
-
-            var useBackend = backendConfig != null ? backendConfig.UseBackendGateway : true;
-            var createEndpoint = backendConfig != null ? backendConfig.BackendCreatePaymentEndpoint : "http://localhost:3000/api/payments/create";
-            var statusEndpointTemplate = backendConfig != null ? backendConfig.BackendGetPaymentStatusEndpointTemplate : "http://localhost:3000/api/payments/status";
-            var clientKey = backendConfig != null ? backendConfig.BackendClientKey : "";
-            var configuredReturnUrl = backendConfig != null ? backendConfig.ReturnUrl : "http://localhost:3000/return";
-
-            IPaymentGateway gateway = useBackend
-                ? (IPaymentGateway)new BackendPaymentGateway(this, createEndpoint, statusEndpointTemplate, clientKey)
-                : new MockPaymentGateway();
-
-            var mapper = new PaymentRequestMapper();
-            _viewModel = new ShopDemoViewModel(cart, gateway, mapper, configuredReturnUrl);
+            var result = ShopDemoInstaller.Install(catalogConfig, fallbackCatalogProducts, backendConfig, this);
+            _viewModel = result.ViewModel;
+            _catalog = result.Catalog;
 
             _viewModel.OnPaymentCreated += OnPaymentCreated;
+            _viewModel.OnPaymentStateChanged += OnPaymentStateChangedLog;
         }
 
         private void OnPaymentCreated(PaymentCreateResponse response)
@@ -190,16 +185,19 @@ namespace UKassaDemo
             Log($"Opening YooKassa payment confirmation: paymentId={response.PaymentId}");
             UnityEngine.Application.OpenURL(response.ConfirmationUrl);
         }
-        #pragma endregion
 
-        #pragma region Helpers
+        private void OnPaymentStateChangedLog(PaymentStateChanged evt)
+        {
+            Log($"PaymentState changed → state={evt.PaymentState}, message=\"{evt.Message}\"");
+        }
+        #endregion
+
+        #region Helpers
         private void Log(string message)
         {
             if (!verboseLogs) return;
             Debug.Log($"[UKassaShopDemoController] {message}");
         }
-        #pragma endregion
-
+        #endregion
     }
 }
-

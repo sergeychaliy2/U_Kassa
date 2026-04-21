@@ -1,55 +1,80 @@
 using System;
 using System.Collections.Generic;
-using UnityEngine;
+using System.Threading;
 
 namespace UKassaDemo.Payments
 {
-    public class MockPaymentGateway : IPaymentGateway
+    /// <summary>
+    /// In-memory payment gateway used to exercise the full flow without a running backend.
+    /// After 3 seconds from creation a payment switches to <c>succeeded</c>.
+    /// </summary>
+    public sealed class MockPaymentGateway : IPaymentGateway
     {
-        private class MockPaymentState
+        private sealed class MockPaymentState
         {
-            public string paymentId;
-            public DateTime createdAtUtc;
+            public string PaymentId;
+            public DateTime CreatedAtUtc;
         }
 
         private readonly Dictionary<string, MockPaymentState> _payments = new();
 
-        public void CreatePayment(PaymentCreateRequest request, Action<PaymentCreateResponse> onSuccess, Action<string> onError)
+        public void CreatePayment(
+            PaymentCreateRequest request,
+            Action<PaymentCreateResponse> onSuccess,
+            Action<PaymentError> onError,
+            CancellationToken cancellationToken = default)
         {
-            if (request == null || request.Items == null || request.Items.Count == 0 || request.TotalRub <= 0)
+            if (cancellationToken.IsCancellationRequested)
             {
-                onError?.Invoke("Корзина пуста или сумма некорректна.");
+                onError?.Invoke(new PaymentError(PaymentErrorKind.Cancelled, "Cancelled before start"));
                 return;
             }
 
-            var responseCreated = new PaymentCreateResponse(
+            if (request == null || request.Items == null || request.Items.Count == 0 || request.TotalRub <= 0)
+            {
+                onError?.Invoke(new PaymentError(PaymentErrorKind.EmptyCart, "Cart is empty or total is invalid"));
+                return;
+            }
+
+            var response = new PaymentCreateResponse(
                 paymentId: $"test_{Guid.NewGuid():N}",
                 confirmationUrl: "https://yoomoney.ru/",
                 status: "pending");
 
-            _payments[responseCreated.PaymentId] = new MockPaymentState
+            _payments[response.PaymentId] = new MockPaymentState
             {
-                paymentId = responseCreated.PaymentId,
-                createdAtUtc = DateTime.UtcNow
+                PaymentId = response.PaymentId,
+                CreatedAtUtc = DateTime.UtcNow,
             };
-            onSuccess?.Invoke(responseCreated);
+
+            onSuccess?.Invoke(response);
         }
 
-        public void GetPaymentStatus(string paymentId, Action<PaymentStatusResponse> onSuccess, Action<string> onError)
+        public void GetPaymentStatus(
+            string paymentId,
+            Action<PaymentStatusResponse> onSuccess,
+            Action<PaymentError> onError,
+            CancellationToken cancellationToken = default)
         {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                onError?.Invoke(new PaymentError(PaymentErrorKind.Cancelled, "Cancelled before start"));
+                return;
+            }
+
             if (string.IsNullOrWhiteSpace(paymentId))
             {
-                onError?.Invoke("Некорректный paymentId.");
+                onError?.Invoke(new PaymentError(PaymentErrorKind.Validation, "paymentId is empty"));
                 return;
             }
 
             if (!_payments.TryGetValue(paymentId, out var state))
             {
-                onError?.Invoke("paymentId не найден в mock-кассе.");
+                onError?.Invoke(new PaymentError(PaymentErrorKind.NotFound, "paymentId not found in mock gateway"));
                 return;
             }
 
-            var elapsed = DateTime.UtcNow - state.createdAtUtc;
+            var elapsed = DateTime.UtcNow - state.CreatedAtUtc;
             var status = elapsed.TotalSeconds >= 3 ? "succeeded" : "pending";
 
             onSuccess?.Invoke(new PaymentStatusResponse(paymentId, status));
